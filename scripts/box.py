@@ -128,9 +128,9 @@ def download_box_file(client: BoxClient, file_id: str) -> bytes:
 
 
 def save_file(file_info: FileInfo, contents: bytes) -> Path:
-    folder = Path().cwd() / "data" / "source-files" / file_info.parent_folder_id
+    folder = Path().cwd() / "data" / "source-files" / file_info.parent_folder_name
     folder.mkdir(exist_ok=True, parents=True)
-    file_path = folder / f"{file_info.file_id}.pdf"
+    file_path = folder / f"{file_info.file_name}"
     with open(file_path, "wb") as f:
         f.write(contents)
     return file_path
