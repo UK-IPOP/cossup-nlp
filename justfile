@@ -1,7 +1,7 @@
 default:
     just --list
 
-set dotenv-load
+set dotenv-load := true
 
-run: 
-    uv run scripts/box.py qJ6dKqrDhRkHDb5OwBDBWQn6I8RnT5BD 286195233329
+run:
+    uv run scripts/box.py $BOX_KEY 286195233329
