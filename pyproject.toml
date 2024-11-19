@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "box-sdk-gen>=1.7.0",
+    "box-sdk-gen[jwt]>=1.7.0",
     "httpx>=0.27.2",
     "ollama>=0.3.3",
     "pydantic>=2.9.2",

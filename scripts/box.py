@@ -5,15 +5,19 @@ import warnings
 from argparse import ArgumentParser
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 import ollama
 from box_sdk_gen import (
     BoxClient,
-    BoxDeveloperTokenAuth,
     UploadFileAttributes,
     UploadFileAttributesParentField,
 )
-from pydantic import BaseModel
+from box_sdk_gen.box.developer_token_auth import BoxDeveloperTokenAuth
+from box_sdk_gen.schemas.file_full import FileFull
+from box_sdk_gen.schemas.folder_mini import FolderMini
+from box_sdk_gen.schemas.web_link import WebLink
+from pydantic import BaseModel, Field
 from PyPDF2 import PdfReader
 from rich.logging import RichHandler
 from tqdm import TqdmExperimentalWarning
@@ -46,6 +50,7 @@ def initialize_logging():
 class Args(BaseModel):
     token: str
     box_folder_id: str
+    fresh: bool = Field(default=False)
 
 
 def parse_args() -> Args:
@@ -55,6 +60,12 @@ def parse_args() -> Args:
     )
     parser.add_argument(
         "box_folder_id", type=str, help="Box folder ID to look in PDFs for"
+    )
+    parser.add_argument(
+        "--fresh",
+        type=bool,
+        help="Delete all the existing DOCX files in the folder for a fresh run",
+        default=False,
     )
     argparse_args = parser.parse_args()
     args_dict = argparse_args.__dict__
@@ -80,6 +91,14 @@ class FileInfo(BaseModel):
     parent_folder_id: str
     parent_folder_name: str
 
+    def model_post_init(self, __context: Any) -> None:
+        # hacky hack :)
+        # Replace spaces with underscores in all string fields
+        for field_name, field_value in self.__dict__.items():
+            if isinstance(field_value, str):
+                setattr(self, field_name, field_value.replace(" ", "_"))
+        return
+
 
 def remove_box_docx(client: BoxClient, folder_id: str) -> int:
     folder = client.folders.get_folder_by_id(folder_id=folder_id)
@@ -99,6 +118,19 @@ def remove_box_docx(client: BoxClient, folder_id: str) -> int:
     return removed
 
 
+def find_report(
+    item: FileFull | FolderMini | WebLink,
+    entries: list[FileFull | FolderMini | WebLink],
+) -> FileFull | FolderMini | WebLink | None:
+    if item.name is None:
+        raise ValueError(f"Expected null check already for {item}")
+    report_name = (
+        item.name.replace(" ", "_").replace(".pdf", ".docx").replace(".PDF", ".docx")
+    )
+    report = next((e for e in entries if e.name == report_name), None)
+    return report
+
+
 def fetch_box_pdfs(client: BoxClient, folder_id: str) -> list[FileInfo]:
     folder = client.folders.get_folder_by_id(folder_id=folder_id)
     if (folder_name := folder.name) is None:
@@ -112,6 +144,11 @@ def fetch_box_pdfs(client: BoxClient, folder_id: str) -> list[FileInfo]:
             logging.error(f"{item} -- has no name")
             continue
         if name.lower().endswith(".pdf"):
+            if (report := find_report(item=item, entries=entries)) is not None:
+                logging.info(
+                    f"Skipping over {item.name}, has matching report: {report.name}"
+                )
+                continue
             info = FileInfo(
                 file_id=item.id,
                 file_name=name,
@@ -159,10 +196,42 @@ def parse_encounters(fpath: Path) -> list[tuple[int, str]]:
 def summarize_encounter(client: ollama.Client, encounter_data: str) -> str:
     response = client.generate(
         model="llama3.2",
-        prompt=f"""
-        Extract key information from the following data:
+        prompt=f"""Please fill out the following template for the provided medial encounter data:
+
+    Medical Records Template
+    -	Date
+    -	Location of visit (ED, CCC intake, family medicine, etc.)
+    -	Name
+    -	Age
+    -	Reason for visit 
+        -	Chief complaint 
+        -	Visit diagnoses
+    -	Discharge medication list
+        -	Medication
+        -	Start date
+        -	Instructions
+    -	Hospital course summary/HPI
+    -	Current facility administered medications 
+    -	Social history 
+    -	Substance use history 
+        -	Amount
+        -	Frequency of use 
+    -	Mental health history 
+    -	Family History 
+    -	Marital status 
+    -	Smoking status 
+        -	Years 
+    -	Sexual activity 
+    -	Any drugs mentioned 
+    -	PMH (past medical history)
+    -	Results 
+    -	Skip all except Toxicology Screen 
+    -	Referrals 
 
         {encounter_data}
+
+    Return a textual response with these items filled out or absent if not applicable. Do 
+    not provide any commentary.
         """,
     )
     return response["response"]
@@ -203,10 +272,10 @@ def save_outcome(outcome: Outcome):
 
 def markdown_to_docx_pandoc(outcome: Outcome, target_path: Path):
     with open("temp.md", "w") as f:
-        f.write("# Patient Summary\n")
+        f.write("\n# Patient Summary\n")
         f.write(outcome.summary + "\n")
         for encounter in outcome.history:
-            f.write(f"## Encounter: {encounter.num}\n")
+            f.write(f"\n## Encounter: {encounter.num}\n")
             f.write(encounter.summary + "\n\n")
 
     # use pandoc
@@ -222,7 +291,10 @@ def markdown_to_docx_pandoc(outcome: Outcome, target_path: Path):
 def save_report(outcome: Outcome) -> Path:
     folder = Path().cwd() / "data" / "reports" / outcome.file_info.parent_folder_name
     folder.mkdir(exist_ok=True, parents=True)
-    filepath = folder / f"{outcome.file_info.file_name.removesuffix('.PDF')}.docx"
+    file_name = outcome.file_info.file_name.replace(".pdf", ".docx").replace(
+        ".PDF", ".docx"
+    )
+    filepath = folder / file_name
     markdown_to_docx_pandoc(outcome=outcome, target_path=filepath)
     return filepath
 
@@ -241,18 +313,20 @@ def upload_file(client: BoxClient, report_path: Path, parent_folder_id: str):
 def main():
     args, box_client, ollama_client = setup()
     logging.debug(args, box_client)
-    removed = remove_box_docx(client=box_client, folder_id=args.box_folder_id)
-    logging.info(f"Removed {removed} DOCX files")
+    if args.fresh:
+        removed = remove_box_docx(client=box_client, folder_id=args.box_folder_id)
+        logging.info(f"Removed {removed} DOCX files")
     files = fetch_box_pdfs(client=box_client, folder_id=args.box_folder_id)
+    logging.info(f"Found {len(files)} to process")
     outcomes: list[Outcome] = []
-    for item in tqdm(files[:3]):
+    for item in files:
         logging.info(f"Downloading: {item.parent_folder_name} / {item.file_name}...")
         file_contents = download_box_file(client=box_client, file_id=item.file_id)
         fpath = save_file(file_info=item, contents=file_contents)
         logging.info(f"Saved source file: {item.parent_folder_name} / {item.file_name}")
         source_encounters = parse_encounters(fpath=fpath)
         encounters: list[Encounter] = []
-        for enc_num, encounter in source_encounters:
+        for enc_num, encounter in tqdm(source_encounters, leave=False):
             summary = summarize_encounter(
                 client=ollama_client,
                 encounter_data=encounter,
@@ -274,6 +348,7 @@ def main():
         save_outcome(outcome=outcome)
         logging.info("Saving report...")
         report_path = save_report(outcome=outcome)
+        logging.info(f"Saved to {report_path}")
         logging.info("Uploading report...")
         upload_file(
             client=box_client,
