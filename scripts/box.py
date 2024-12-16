@@ -20,7 +20,6 @@ from box_sdk_gen.schemas.folder_mini import FolderMini
 from box_sdk_gen.schemas.web_link import WebLink
 from pydantic import BaseModel, Field
 from PyPDF2 import PdfReader
-from rich import print
 from rich.logging import RichHandler
 from tqdm import TqdmExperimentalWarning
 from tqdm.rich import tqdm
@@ -353,7 +352,6 @@ def main():
                 page_range=(0, 0),
                 summary=summary,
             )
-            print(e)
             encounters.append(e)
         history_summary = summarize_history(
             client=ollama_client,
@@ -371,11 +369,11 @@ def main():
         report_path = save_report(outcome=outcome)
         logging.info(f"Saved to {report_path}")
         logging.info("Uploading report...")
-        # upload_file(
-        #     client=box_client,
-        #     report_path=report_path,
-        #     parent_folder_id=outcome.file_info.parent_folder_id,
-        # )
+        upload_file(
+            client=box_client,
+            report_path=report_path,
+            parent_folder_id=outcome.file_info.parent_folder_id,
+        )
 
 
 if __name__ == "__main__":
