@@ -1,9 +1,10 @@
+from __future__ import annotations
+
 import logging
 import os
 import subprocess
 import warnings
 from argparse import ArgumentParser
-from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ from box_sdk_gen.schemas.folder_mini import FolderMini
 from box_sdk_gen.schemas.web_link import WebLink
 from pydantic import BaseModel, Field
 from PyPDF2 import PdfReader
+from rich import print
 from rich.logging import RichHandler
 from tqdm import TqdmExperimentalWarning
 from tqdm.rich import tqdm
@@ -173,24 +175,50 @@ def save_file(file_info: FileInfo, contents: bytes) -> Path:
     return file_path
 
 
-def parse_encounters(fpath: Path) -> list[tuple[int, str]]:
+class EncounterInfo(BaseModel):
+    num: int
+    page_range: tuple[int, int]
+    content: str
+
+    @classmethod
+    def default_with_int(cls, num: int) -> EncounterInfo:
+        return EncounterInfo(num=num, page_range=(0, 0), content="")
+
+
+def parse_encounters(fpath: Path) -> list[EncounterInfo]:
     pdf_reader = PdfReader(fpath)
-    encounter_data: dict[int, list[str]] = defaultdict(list)
+    encounter_data: dict[int, EncounterInfo] = dict()
     encounter_count = 1
+    page_min = 0
+    page_max = 0
     for i, page in enumerate(pdf_reader.pages):
         text = str(page.extract_text())
+        if encounter_data.get(encounter_count, None) is None:
+            encounter_data[encounter_count] = EncounterInfo.default_with_int(
+                num=encounter_count
+            )
         # skip checking first page
         if i == 0:
-            encounter_data[encounter_count].append(text)
+            encounter_data[encounter_count].content += text
             continue
         if "Reason for Visit" in text:
+            # before increment, update previous encounter page range
+            encounter_data[encounter_count].page_range = (page_min, page_max)
             # increment
+            page_min = i
             encounter_count += 1
-            encounter_data[encounter_count].append(text)
+            if encounter_data.get(encounter_count, None) is None:
+                info = EncounterInfo(
+                    num=encounter_count,
+                    page_range=(0, 0),
+                    content=text,
+                )
+                encounter_data[encounter_count] = info
         else:
             # otherwise append
-            encounter_data[encounter_count].append(text)
-    return [(k, "\n".join(v)) for k, v in encounter_data.items()]
+            page_max = i
+            encounter_data[encounter_count].content += text
+    return list(encounter_data.values())
 
 
 def load_template() -> str:
@@ -237,6 +265,7 @@ def summarize_history(client: ollama.Client, history: list[str]) -> str:
 
 class Encounter(BaseModel):
     num: int
+    page_range: tuple[int, int]
     source_data: str
     summary: str
 
@@ -312,14 +341,20 @@ def main():
         logging.info(f"Saved source file: {item.parent_folder_name} / {item.file_name}")
         source_encounters = parse_encounters(fpath=fpath)
         encounters: list[Encounter] = []
-        for enc_num, encounter in tqdm(source_encounters, leave=False):
+        for encounter in tqdm(source_encounters, leave=False):
             summary = summarize_encounter(
                 client=ollama_client,
-                encounter_data=encounter,
+                encounter_data=encounter.content,
+                page_range=encounter.page_range,
             )
-            encounters.append(
-                Encounter(num=enc_num, source_data=encounter, summary=summary)
+            e = Encounter(
+                num=encounter.num,
+                source_data=encounter.content,
+                page_range=(0, 0),
+                summary=summary,
             )
+            print(e)
+            encounters.append(e)
         history_summary = summarize_history(
             client=ollama_client,
             history=[e.summary for e in encounters],
@@ -336,11 +371,11 @@ def main():
         report_path = save_report(outcome=outcome)
         logging.info(f"Saved to {report_path}")
         logging.info("Uploading report...")
-        upload_file(
-            client=box_client,
-            report_path=report_path,
-            parent_folder_id=outcome.file_info.parent_folder_id,
-        )
+        # upload_file(
+        #     client=box_client,
+        #     report_path=report_path,
+        #     parent_folder_id=outcome.file_info.parent_folder_id,
+        # )
 
 
 if __name__ == "__main__":
