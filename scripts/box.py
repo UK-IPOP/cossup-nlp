@@ -193,48 +193,34 @@ def parse_encounters(fpath: Path) -> list[tuple[int, str]]:
     return [(k, "\n".join(v)) for k, v in encounter_data.items()]
 
 
-def summarize_encounter(client: ollama.Client, encounter_data: str) -> str:
+def load_template() -> str:
+    with open(Path().cwd() / "resources" / "summary-template.md", "r") as f:
+        template = f.read()
+    return template
+
+
+def summarize_encounter(
+    client: ollama.Client,
+    encounter_data: str,
+    page_range: tuple[int, int],
+) -> str:
+    template = load_template()
+
     response = client.generate(
         model="llama3.2",
-        prompt=f"""Please fill out the following template for the provided medial encounter data:
+        prompt=f"""Given the following template: 
+        
+        {template}
 
-    Medical Records Template
-    -	Date
-    -	Location of visit (ED, CCC intake, family medicine, etc.)
-    -	Name
-    -	Age
-    -	Reason for visit 
-        -	Chief complaint 
-        -	Visit diagnoses
-    -	Discharge medication list
-        -	Medication
-        -	Start date
-        -	Instructions
-    -	Hospital course summary/HPI
-    -	Current facility administered medications 
-    -	Social history 
-    -	Substance use history 
-        -	Amount
-        -	Frequency of use 
-    -	Mental health history 
-    -	Family History 
-    -	Marital status 
-    -	Smoking status 
-        -	Years 
-    -	Sexual activity 
-    -	Any drugs mentioned 
-    -	PMH (past medical history)
-    -	Results 
-    -	Skip all except Toxicology Screen 
-    -	Referrals 
+        Fill out as much information as possible, retaining the template structure, by 
+        examining the following data. Do not provide any supplemental commentary.
 
         {encounter_data}
-
-    Return a textual response with these items filled out or absent if not applicable. Do 
-    not provide any commentary.
         """,
     )
-    return response["response"]
+    result: str = response["response"]
+    result += f"\n\nFound on pages: {page_range[0]}-{page_range[1]}"
+    return result
 
 
 def summarize_history(client: ollama.Client, history: list[str]) -> str:
