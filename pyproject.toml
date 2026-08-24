@@ -1,23 +1,16 @@
 [project]
-name = "cossup-nlp"
+name = "cossup"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 dependencies = [
-    "box-sdk-gen[jwt]>=1.7.0",
-    "httpx>=0.27.2",
-    "ollama>=0.3.3",
-    "pydantic>=2.9.2",
+    "boto3>=1.42.74",
+    "discord-py>=2.7.1",
+    "docling>=2.81.0",
+    "httpx>=0.28.1",
+    "logfire>=4.41.0",
+    "pydantic-ai>=1.61.0",
     "pypdf2>=3.0.1",
-    "python-docx>=1.1.2",
-    "requests>=2.32.3",
-    "rich>=13.9.2",
-    "ruff>=0.6.9",
-    "tqdm>=4.67.0",
-]
-
-[tool.uv]
-dev-dependencies = [
-    "ruff>=0.6.9",
+    "ruff>=0.14.9",
 ]
