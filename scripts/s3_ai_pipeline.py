@@ -13,110 +13,33 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime
 from io import BytesIO
-from pathlib import Path
 
 import boto3
-import discord
 import httpx
-import logfire
 from botocore.exceptions import ClientError
 from docling.document_converter import DocumentConverter
 from docling_core.types.io import DocumentStream
-from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.ollama import OllamaProvider
 from PyPDF2 import PdfReader, PdfWriter
 
-
-def required_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"Required environment variable {name} is not set")
-    return value
-
-
-S3_BUCKET = required_env("S3_BUCKET")
-S3_ACCESS_KEY = required_env("S3_ACCESS_KEY")
-S3_SECRET_KEY = required_env("S3_SECRET_KEY")
-S3_ENDPOINT = required_env("S3_ENDPOINT")
-OLLAMA_MODEL = required_env("OLLAMA_MODEL")
-OLLAMA_BASE_URL = required_env("OLLAMA_BASE_URL")
-LOGFIRE_TOKEN = required_env("LOGFIRE_TOKEN")
-TEMPLATE_PATH = Path(os.getenv("TEMPLATE_PATH", "resources/summary-template.md"))
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-DISCORD_USER_ID = int(os.getenv("DISCORD_USER_ID", "0"))
-
-LOG_LEVELS = {
-    "DEBUG": logging.DEBUG,
-    "INFO": logging.INFO,
-    "WARNING": logging.WARNING,
-    "ERROR": logging.ERROR,
-    "CRITICAL": logging.CRITICAL,
-}
-
-
-async def send_dm(message: str) -> None:
-    if not DISCORD_TOKEN or not DISCORD_USER_ID:
-        return
-
-    intents = discord.Intents.default()
-
-    async with discord.Client(intents=intents) as client:
-
-        @client.event
-        async def on_ready():
-            user = await client.fetch_user(DISCORD_USER_ID)
-            await user.send(f"TS: {datetime.now()} :: {message}")
-            await client.close()
-
-        await client.start(DISCORD_TOKEN)
-
-
-def initialize_logging(log_level: str = "INFO"):
-    level = LOG_LEVELS.get(log_level.upper(), logging.INFO)
-    logfire.configure(token=LOGFIRE_TOKEN)
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s | %(levelname)-8s | %(message)s",
-        handlers=[logfire.LogfireLoggingHandler()],
-    )
-    logfire.instrument_pydantic_ai()
-
-
-class ProcessingStats:
-    """Statistics counter."""
-
-    def __init__(self):
-        self.total = 0
-        self.processed = 0
-        self.skipped = 0
-        self.failed = 0
-
-
-class FileInfo(BaseModel):
-    s3_key: str
-    s3_etag: str | None = None
-    size: int | None = None
-
-
-class Encounter(BaseModel):
-    num: int
-    page_range: tuple[int, int]
-    source_data: str
-    summary: str
-
-
-class Outcome(BaseModel):
-    file_info: FileInfo
-    history: list[Encounter]
-    summary: str
+from scripts.pipeline_config import (
+    OLLAMA_BASE_URL,
+    OLLAMA_MODEL,
+    S3_ACCESS_KEY,
+    S3_BUCKET,
+    S3_ENDPOINT,
+    S3_SECRET_KEY,
+    TEMPLATE_PATH,
+)
+from scripts.pipeline_models import Encounter, FileInfo, Outcome, ProcessingStats
+from scripts.pipeline_observability import initialize_logging, send_dm
 
 
 class S3AIPipeline:
-    """Handles S3 operations, PDF conversion, and AI summarization."""
+    """Coordinate S3 I/O, PDF conversion, and AI summarization."""
 
     def __init__(
         self,
@@ -124,6 +47,7 @@ class S3AIPipeline:
         overwrite: bool = False,
         log_level: str = "INFO",
     ):
+        """Initialize clients, converters, models, and run state."""
         self.bucket = S3_BUCKET
         self.workers = workers
         self.overwrite = overwrite
@@ -261,7 +185,7 @@ Summarize the following historical data:
         return result.output if isinstance(result.output, str) else str(result.output)
 
     def process_single_pdf(self, pdf_key: str) -> bool:
-        """Process a single PDF: download, convert, summarize, upload."""
+        """Download, convert, summarize, and upload one PDF object."""
         summary_key = pdf_key.rsplit(".", 1)[0] + ".summary.md"
 
         self.logger.debug(f"[{pdf_key}] Starting processing")
@@ -361,7 +285,7 @@ Summarize the following historical data:
         return True
 
     def run(self):
-        """Main execution: list PDFs and process with thread pool."""
+        """List PDFs and process each one sequentially."""
         start_time = time.time()
 
         self.logger.info("=" * 50)
@@ -420,8 +344,8 @@ Summarize the following historical data:
             asyncio.run(send_dm(message))
 
 
-def parse_args():
-    """Parse command-line arguments."""
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for a pipeline run."""
     parser = argparse.ArgumentParser(
         description="Download PDFs from S3, convert to Markdown, parse encounters, "
         "generate summaries via PydanticAI + Ollama, and upload .summary.md to S3."

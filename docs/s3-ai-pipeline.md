@@ -1,8 +1,11 @@
-# `s3_ai_pipeline.py`
+# `scripts/s3_ai_pipeline.py`
 
 ## High-level summary
 
-`s3_ai_pipeline.py` scans an S3-compatible object store for PDF files, processes each PDF into encounter-level medical summaries, and writes a combined Markdown summary back to the same bucket. AI calls use PydanticAI with an Ollama-hosted model.
+`scripts/s3_ai_pipeline.py` scans an S3-compatible object store for PDF files,
+processes each PDF into encounter-level medical summaries, and writes a
+combined Markdown summary back to the same bucket. AI calls use PydanticAI with
+an Ollama-hosted model.
 
 For a source object such as `records/case.pdf`, the pipeline produces `records/case.summary.md`, containing an overall patient summary followed by summaries for each encounter.
 
