@@ -6,11 +6,15 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "boto3>=1.42.74",
-    "discord-py>=2.7.1",
     "docling>=2.81.0",
     "httpx>=0.28.1",
-    "logfire>=4.41.0",
     "pydantic-ai>=1.61.0",
     "pypdf2>=3.0.1",
     "ruff>=0.14.9",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.4",
+    "ty>=0.0.78",
 ]

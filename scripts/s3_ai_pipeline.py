@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 S3 AI Pipeline
 
@@ -14,6 +13,7 @@ import os
 import sys
 import time
 from io import BytesIO
+from typing import cast
 
 import boto3
 import httpx
@@ -35,7 +35,7 @@ from scripts.pipeline_config import (
     TEMPLATE_PATH,
 )
 from scripts.pipeline_models import Encounter, FileInfo, Outcome, ProcessingStats
-from scripts.pipeline_observability import initialize_logging, send_dm
+from scripts.pipeline_observability import initialize_logging
 
 
 class S3AIPipeline:
@@ -218,7 +218,7 @@ Summarize the following historical data:
             self.logger.debug(f"[{pdf_key}] Splitting PDF into encounters...")
             encounter_chunks = self._split_pdf_into_encounters(pdf_bytes)
             self.logger.debug(f"[{pdf_key}] Found {len(encounter_chunks)} encounter(s)")
-        except Exception as e:
+        except (RuntimeError, ValueError, OSError) as e:
             self.logger.error(f"[{pdf_key}] Failed to split PDF into encounters: {e}")
             self.stats.failed += 1
             return False
@@ -239,7 +239,7 @@ Summarize the following historical data:
                     summary=summary,
                 )
                 encounters.append(enc)
-            except Exception as e:
+            except (RuntimeError, ValueError, OSError, TypeError) as e:
                 self.logger.warning(
                     f"[{pdf_key}] Failed to process encounter {idx}: {e}"
                 )
@@ -252,13 +252,13 @@ Summarize the following historical data:
         try:
             self.logger.debug(f"[{pdf_key}] Generating overall summary...")
             overall_summary = asyncio.run(self._summarize_history(encounters))
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, OSError) as e:
             self.logger.warning(f"[{pdf_key}] Failed to generate overall summary: {e}")
             overall_summary = "\n\n".join([e.summary for e in encounters])
 
         outcome = Outcome(
             file_info=FileInfo(s3_key=pdf_key),
-            history=sorted(encounters, key=lambda x: x.num),
+            history=sorted(encounters, key=lambda x: cast(Encounter, x).num),
             summary=overall_summary,
         )
 
@@ -309,13 +309,9 @@ Summarize the following historical data:
         self.logger.info(f"Processing {len(pdf_keys)} file(s) sequentially...")
 
         for pdf_key in pdf_keys:
-            if "172_Johnson" in pdf_key:
-                self.logger.warning("CONTINUING SKIPPING INVALID KEY")
-                continue
-
             try:
                 self.process_single_pdf(pdf_key)
-            except Exception as e:
+            except (RuntimeError, ValueError, TypeError, OSError) as e:
                 self.logger.error(f"[{pdf_key}] Unexpected error: {e}")
                 self.stats.failed += 1
 
@@ -336,12 +332,13 @@ Summarize the following historical data:
         self.logger.info("=" * 50)
 
         if self.stats.failed > 0:
-            message = (
-                f"S3 AI Pipeline FAILED: "
-                f"{self.stats.processed} processed, {self.stats.skipped} skipped, "
-                f"{self.stats.failed} failed in {elapsed:.2f}s"
+            self.logger.error(
+                "S3 AI Pipeline FAILED: %s processed, %s skipped, %s failed in %.2fs",
+                self.stats.processed,
+                self.stats.skipped,
+                self.stats.failed,
+                elapsed,
             )
-            asyncio.run(send_dm(message))
 
 
 def parse_args() -> argparse.Namespace:
@@ -374,6 +371,7 @@ def parse_args() -> argparse.Namespace:
 
 def main():
     """Entry point."""
+    logger = logging.getLogger(__name__)
     args = parse_args()
 
     if args.workers < 1:
@@ -389,10 +387,10 @@ def main():
     try:
         pipeline.run()
     except KeyboardInterrupt:
-        logging.warning("Interrupted by user")
+        logger.warning("Interrupted by user")
         sys.exit(130)
-    except Exception as e:
-        logging.error(f"Fatal error: {e}")
+    except (RuntimeError, ValueError, OSError, TypeError) as exc:
+        logger.error(f"Fatal error: {exc}")
         sys.exit(1)
 
 
